@@ -1,0 +1,78 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: assessment
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d assessment"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+
+  queue:
+    image: softwaremill/elasticmq-native:1.7.1
+    ports:
+      - "9324:9324"
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    ports:
+      - "6379:6379"
+
+  api: &app
+    build: .
+    restart: on-failure
+    environment: &env
+      DATABASE_URL: postgresql://app_user:app@db:5432/assessment
+      DATABASE_ADMIN_URL: postgresql://postgres:postgres@db:5432/assessment
+      JWT_SECRET: local-development-secret
+      SQS_ENDPOINT: http://queue:9324
+      REDIS_URL: redis://redis:6379/0
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      AWS_DEFAULT_REGION: us-east-1
+    depends_on:
+      db:
+        condition: service_healthy
+      queue:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  relay:
+    <<: *app
+    command: ["python", "-m", "app.worker", "relay"]
+    ports: []
+
+  scoring-worker:
+    <<: *app
+    command: ["python", "-m", "app.worker", "score"]
+    ports: []
+
+  report-worker:
+    <<: *app
+    command: ["python", "-m", "app.worker", "report"]
+    ports: []
+
+  deadline-worker:
+    <<: *app
+    command: ["python", "-m", "app.worker", "deadlines"]
+    ports: []
+
+volumes:
+  pgdata:
